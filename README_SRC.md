@@ -1,4 +1,4 @@
-# GLOBEM — `src/` (Paso A.1 completado)
+# GLOBEM — `src/` (Pasos A.1, A.2 y A.3 completados)
 
 Motor Python extraído del notebook `globem_es.ipynb`. Todo el código sale del
 notebook celda a celda; lo que se ha hecho es organizarlo en módulos por
@@ -53,7 +53,7 @@ avisos = build_clinical_notices(df_episodios, df_rolling, reglas["persistence"])
 python3 -m pytest tests/ -q
 ```
 
-- **78 tests sintéticos** que no necesitan los CSV: comprueban cada pieza con
+- **97 tests sintéticos** que no necesitan los CSV: comprueban cada pieza con
   datos construidos a propósito (6 personas, 2 de ellas con una desviación real
   sostenida en sueño y pasos).
 - **12 tests contra los datos reales** (`test_real_data.py`), que verifican las
@@ -61,6 +61,8 @@ python3 -m pytest tests/ -q
   umbral de winsorización 24.07, 0 alertas sobre ruido blanco, 100% de
   corroboración CUSUM/EWMA, frescura 31/11/21. Se saltan solos si los CSV no
   están en `datasets/`.
+
+**Total: 109 tests.**
 
 ## Diferencias respecto al notebook
 
@@ -80,12 +82,25 @@ Ninguna en resultados. Dos en la implementación, ambas deliberadas:
    orden con `sort=False`. Hay un test de regresión que lo blinda
    (`test_el_zscore_no_mezcla_participantes_si_el_orden_no_es_alfabetico`).
 
-## Pendiente (A.2 a A.4)
+## Añadido después de la extracción (no venía del notebook)
 
-- **A.2** — Semáforo señal/ruido 0-10 para la Parte 2 de la app. La materia
-  prima ya está en `validation.py`; falta la fórmula que convierte "alertas
-  reales vs alertas sobre ruido" en un número 0-10, con cuidado de no dividir
-  por cero cuando el ruido da 0 alertas.
-- **A.3** — Mini-gráfica recortada del episodio (ventana alrededor del día de
-  arranque, no los 92 días completos).
+- **A.2 — Semáforo señal/ruido**, en `validation.py`: `signal_noise_score` y
+  `signal_noise_grid`. Convierte "alertas reales frente a alertas sobre ruido"
+  en un número 0-10 para cada combinación de umbral y persistencia. Usa
+  permutación temporal, no ruido blanco (el ruido blanco da cero alertas en
+  todas las configuraciones y no distinguiría ninguna).
+
+- **A.3 — Series por persona para la app**, en `features.py`:
+  `build_trajectory`, `build_episode_window`, `count_active_domains` y
+  `global_index_to_day`. Exportan la serie diaria de las cuatro señales, los
+  días-alerta y los arranques de episodio. Sin ventana alimentan el panel
+  izquierdo (92 días); con ventana, la gráfica pequeña del panel derecho, que
+  es un recorte exacto de la misma serie.
+
+## Pendiente
+
 - **A.4** — Las tres vistas del dashboard: Historial, Pacientes, Resumen.
+- **B** — `run_pipeline.py`: ejecuta el motor una vez y vuelca los JSON.
+- **C/D** — Copiar los JSON a `Portafolio-VSC/projects/globem-app/data/`.
+- **E** — `app.js`: reproductor, gráficas, mandos, pestañas.
+- **F** — `Dockerfile` y despliegue.

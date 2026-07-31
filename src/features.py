@@ -223,3 +223,151 @@ def build_features(zscores, dfs, window=7):
     df_z_roll_mean_w, threshold, n_clipped = winsorize_location(df_z_roll_mean)
 
     return df_z_roll_mean_w, df_z_roll_std, threshold, n_clipped
+
+
+# ---------------------------------------------------------------------------
+# SERIES POR PERSONA PARA LA APLICACION (pieza A.3)
+# ---------------------------------------------------------------------------
+
+def build_trajectory(df_rolling, df_convergence, pid,
+                     day_from=None, day_to=None):
+    """
+    Devuelve la trayectoria de UNA persona en la forma que consume la
+    aplicacion: la serie diaria de las cuatro señales, que dias fueron
+    dia-alerta, y en que dias arranco un episodio.
+
+    Alimenta las DOS graficas de la app con la misma funcion:
+      - Panel izquierdo (reproductor): se pide sin ventana, y devuelve los 92
+        dias completos para que el visitante los vea pasar uno a uno.
+      - Panel derecho (detalle del episodio): se pide con day_from y day_to
+        alrededor del dia de arranque, y devuelve solo ese tramo. Es un
+        recorte de la misma serie, no un calculo distinto.
+
+    Sobre el indice (extraido del notebook, celda 332): el indice interno de
+    df_rolling es GLOBAL, no reinicia en cada persona (INS-W_001 ocupa del 0
+    al 91, INS-W_002 del 92 al 183). Aqui se convierte a dia relativo 0..91,
+    que es lo que la app necesita para decir "dia 64 de 92".
+
+    Los dias sin dato salen como None, no como cero: los primeros 28 dias de
+    cada persona no tienen baseline calculable, y un cero fingiria una
+    observacion que no existe. El frontend arranca la linea donde empieza el
+    dato.
+
+    Devuelve un diccionario con pid, n_days, days, series (las cuatro), alert
+    days y episode starts, listo para volcar a JSON.
+    """
+    sub_rolling = df_rolling.loc[pid].sort_index()
+    sub_conv = df_convergence.loc[pid].sort_index()
+
+    n_days = len(sub_rolling)
+
+    dias = []
+    for dia in range(n_days):
+        dias.append(dia)
+
+    series = {}
+    for dim in DIMENSIONS:
+        valores = []
+        for v in sub_rolling[dim].values:
+            if np.isnan(v):
+                valores.append(None)
+            else:
+                valores.append(round(float(v), 3))
+        series[dim] = valores
+
+    # Dias-alerta y arranques de episodio, en dia relativo
+    conv_valores = sub_conv["convergence"].values
+    dias_alerta = []
+    arranques = []
+    for k in range(len(conv_valores)):
+        if conv_valores[k] == 1.0:
+            dias_alerta.append(k)
+            if k == 0:
+                arranques.append(k)
+            elif conv_valores[k - 1] != 1.0:
+                arranques.append(k)
+
+    # Recorte opcional (panel derecho)
+    if day_from is None:
+        day_from = 0
+    if day_to is None:
+        day_to = n_days - 1
+
+    if day_from < 0:
+        day_from = 0
+    if day_to > n_days - 1:
+        day_to = n_days - 1
+
+    dias_recorte = []
+    for dia in dias:
+        if day_from <= dia <= day_to:
+            dias_recorte.append(dia)
+
+    series_recorte = {}
+    for dim in DIMENSIONS:
+        valores = []
+        for dia in range(n_days):
+            if day_from <= dia <= day_to:
+                valores.append(series[dim][dia])
+        series_recorte[dim] = valores
+
+    alerta_recorte = []
+    for dia in dias_alerta:
+        if day_from <= dia <= day_to:
+            alerta_recorte.append(dia)
+
+    arranque_recorte = []
+    for dia in arranques:
+        if day_from <= dia <= day_to:
+            arranque_recorte.append(dia)
+
+    return {
+        "pid": pid,
+        "n_days": n_days,
+        "day_from": day_from,
+        "day_to": day_to,
+        "days": dias_recorte,
+        "series": series_recorte,
+        "alert_days": alerta_recorte,
+        "episode_starts": arranque_recorte,
+    }
+
+
+def build_episode_window(df_rolling, df_convergence, pid, start_day, margen=7):
+    """
+    Atajo para la grafica pequeña del panel derecho: el mismo tramo de serie,
+    centrado en el dia de arranque del episodio, con 'margen' dias a cada
+    lado. Si el episodio esta cerca de un extremo, la ventana se recorta
+    contra el limite sin desplazarse.
+    """
+    return build_trajectory(df_rolling, df_convergence, pid,
+                            start_day - margen, start_day + margen)
+
+
+def count_active_domains(df_pillars, pid, day_index):
+    """
+    Cuenta cuantos de los tres dominios (sueño, activacion, uso pasivo)
+    estaban activos ese dia. Es el "3 dominios" que muestra la tarjeta de
+    aviso del panel derecho.
+
+    day_index es el INDICE GLOBAL de esa fila, no el dia relativo.
+    """
+    fila = df_pillars.loc[(pid, day_index)]
+
+    activos = 0
+    for nombre in ["sleep", "activation", "passive_use"]:
+        v = fila[nombre]
+        if not np.isnan(v) and v == 1.0:
+            activos = activos + 1
+
+    return activos
+
+
+def global_index_to_day(df_convergence, pid, global_index):
+    """
+    Traduce el indice global de una fila al dia relativo 0..91 de esa persona.
+    Necesario porque df_episodes guarda start_idx en indice global y la app
+    tiene que decir "dia 67".
+    """
+    primer_indice = df_convergence.loc[pid].index.min()
+    return int(global_index - primer_indice)
