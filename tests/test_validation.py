@@ -184,3 +184,90 @@ def test_frescura_con_racha_corta_da_aviso_tras_el_cierre():
 
     fresco = freshness(conv)
     assert fresco["same_day"] == 1 or fresco["already_ended"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Semaforo señal/ruido (pieza A.2)
+# ---------------------------------------------------------------------------
+
+from src.validation import signal_noise_score, signal_noise_grid, CONTAMINACION_CERO
+
+
+def test_el_indicador_esta_entre_0_y_10(rolling_sintetico):
+    r = signal_noise_score(rolling_sintetico, 2.0, 5, n_reps=3, seed=0)
+    assert 0.0 <= r["score"] <= 10.0
+
+
+def test_el_indicador_devuelve_todo_lo_necesario_para_el_json(rolling_sintetico):
+    r = signal_noise_score(rolling_sintetico, 2.0, 5, n_reps=3, seed=0)
+    esperadas = {"threshold", "persist", "real_days", "real_episodes",
+                 "noise_mean", "noise_max", "contamination", "score"}
+    assert set(r.keys()) == esperadas
+
+
+def test_sin_contaminacion_el_indicador_es_10(rolling_sintetico):
+    """
+    Si el ruido no produce ni una alerta, todas las alertas reales son señal
+    y el indicador esta en su tope.
+    """
+    r = signal_noise_score(rolling_sintetico, 2.0, 5, n_reps=3, seed=0)
+    if r["noise_mean"] == 0.0:
+        assert r["score"] == 10.0
+
+
+def test_una_configuracion_que_no_detecta_nada_puntua_cero():
+    """
+    Sin alertas reales no hay señal que medir, y el indicador no puede
+    premiar esa configuracion por no tener ruido.
+    """
+    indice = pd.MultiIndex.from_product([["A"], range(30)], names=["pid", "idx"])
+    plano = pd.DataFrame({
+        "sleep": [0.0] * 30, "steps": [0.0] * 30,
+        "location": [0.0] * 30, "screen": [0.0] * 30,
+    }, index=indice)
+
+    r = signal_noise_score(plano, 2.0, 5, n_reps=2, seed=0)
+    assert r["real_days"] == 0
+    assert r["score"] == 0.0
+
+
+def test_la_contaminacion_es_la_proporcion_de_alertas_explicables_por_azar(rolling_sintetico):
+    r = signal_noise_score(rolling_sintetico, 2.0, 5, n_reps=3, seed=0)
+    if r["real_days"] > 0:
+        esperada = r["noise_mean"] / r["real_days"]
+        assert abs(r["contamination"] - esperada) < 1e-5
+
+
+def test_el_umbral_de_contaminacion_marca_el_cero():
+    """
+    La constante que define cuando el indicador vale 0 debe estar declarada y
+    ser una proporcion, no un porcentaje.
+    """
+    assert 0.0 < CONTAMINACION_CERO < 1.0
+
+
+def test_la_rejilla_cubre_todas_las_combinaciones(rolling_sintetico):
+    grid = signal_noise_grid(rolling_sintetico, [2.0, 2.5], [3, 5], n_reps=2, seed=0)
+
+    assert set(grid.keys()) == {"2.0_3", "2.0_5", "2.5_3", "2.5_5"}
+    for clave in grid:
+        assert 0.0 <= grid[clave]["score"] <= 10.0
+
+
+def test_la_rejilla_conserva_la_configuracion_de_cada_celda(rolling_sintetico):
+    grid = signal_noise_grid(rolling_sintetico, [2.5], [3], n_reps=2, seed=0)
+    celda = grid["2.5_3"]
+
+    assert celda["threshold"] == 2.5
+    assert celda["persist"] == 3
+
+
+def test_aflojar_la_regla_produce_mas_alertas_reales(rolling_sintetico):
+    """
+    Relacion que sostiene todo el semaforo: al aflojar entran mas dias-alerta,
+    y con ellos la posibilidad de que entre ruido.
+    """
+    laxo = signal_noise_score(rolling_sintetico, 1.5, 3, n_reps=2, seed=0)
+    estricto = signal_noise_score(rolling_sintetico, 2.5, 7, n_reps=2, seed=0)
+
+    assert laxo["real_days"] >= estricto["real_days"]

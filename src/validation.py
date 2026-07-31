@@ -25,11 +25,11 @@ Contiene:
 import numpy as np
 import pandas as pd
 
-from .rule import apply_rule
+from .rule import apply_rule, DEFAULT_THRESHOLD, DEFAULT_PERSIST
 from .episodes import build_episodes_with_end
 
 
-def simulate_white_noise(df_rolling, n_reps=100, seed=0):
+def simulate_white_noise(df_rolling, n_reps=100, seed=0, threshold=2.0, persist=5):
     """
     Genera n_reps replicas de ruido blanco N(0,1): para cada persona y
     dimension, sustituye cada valor no-NaN por un valor aleatorio de una
@@ -58,14 +58,14 @@ def simulate_white_noise(df_rolling, n_reps=100, seed=0):
                 else:
                     v_sim.append(np.random.normal(0, 1))
             df_sim[dim] = v_sim
-        n_d, n_e = apply_rule(df_sim)
+        n_d, n_e = apply_rule(df_sim, threshold, persist)
         white_days.append(n_d)
         white_eps.append(n_e)
 
     return np.array(white_days), np.array(white_eps)
 
 
-def simulate_temporal_permutation(df_rolling, n_reps=100, seed=0):
+def simulate_temporal_permutation(df_rolling, n_reps=100, seed=0, threshold=2.0, persist=5):
     """
     Genera n_reps replicas de permutacion temporal: para cada persona y
     dimension, conserva los valores reales que esa persona produjo (mismos
@@ -96,7 +96,7 @@ def simulate_temporal_permutation(df_rolling, n_reps=100, seed=0):
                 values[mask_no_nan] = shuffled_values
                 new_values.extend(values.tolist())
             df_sim[dim] = new_values
-        n_d, n_e = apply_rule(df_sim)
+        n_d, n_e = apply_rule(df_sim, threshold, persist)
         perm_days.append(n_d)
         perm_eps.append(n_e)
 
@@ -294,3 +294,99 @@ def freshness(df_convergence):
         "days_since_end": days_since_end,
         "n_episodes": len(df_episodes_end),
     }
+
+
+# ---------------------------------------------------------------------------
+# SEMAFORO SEÑAL/RUIDO (Parte 2 de la app) — pieza A.2
+# ---------------------------------------------------------------------------
+
+# Tasa de contaminacion a partir de la cual el indicador vale 0.
+# Justificacion (criterio de uso, no estadistico): si mas de 1 de cada 20
+# dias-alerta puede producirlo un dato sin ninguna estructura conductual, el
+# terapeuta no puede fiarse de la alerta. Es el mismo principio que fijo el
+# punto de operacion en el Bloque 5: la credibilidad ante quien la usa.
+CONTAMINACION_CERO = 0.05
+
+
+def signal_noise_score(df_rolling, threshold=DEFAULT_THRESHOLD,
+                       persist=DEFAULT_PERSIST, n_reps=100, seed=0):
+    """
+    Calcula el indicador señal/ruido 0-10 de una configuracion.
+
+    Procedimiento:
+      1. Cuenta los dias-alerta que la configuracion produce sobre los datos
+         reales.
+      2. Repite n_reps veces la permutacion temporal (conserva los valores de
+         cada persona, baraja su orden) y cuenta los dias-alerta medios que
+         esa misma configuracion produce sobre datos sin secuencia real.
+      3. Contaminacion = dias-alerta de ruido / dias-alerta reales. Es la
+         proporcion de las alertas que podria explicar el azar.
+      4. Indicador = 10 cuando la contaminacion es nula, y baja linealmente
+         hasta 0 al llegar a CONTAMINACION_CERO.
+
+    Por que la permutacion y no el ruido blanco (verificado sobre los datos
+    reales): el ruido blanco da 0 dias-alerta en TODAS las configuraciones,
+    asi que no distingue unas de otras y el indicador se quedaria clavado en
+    10. La permutacion conserva los valores extremos de cada persona y solo
+    destruye el orden, asi que es la prueba exigente: mide si la regla
+    responde a la secuencia temporal o solo a valores altos sueltos.
+
+    Devuelve un diccionario con threshold, persist, real_days, noise_mean,
+    noise_max, contamination y score.
+    """
+    real_days, real_episodes = apply_rule(df_rolling, threshold, persist)
+
+    noise_days, noise_episodes = simulate_temporal_permutation(
+        df_rolling, n_reps, seed, threshold, persist)
+
+    noise_mean = float(noise_days.mean())
+    noise_max = int(noise_days.max())
+
+    if real_days == 0:
+        # Una configuracion que no detecta nada no tiene señal que medir.
+        contamination = 0.0
+        score = 0.0
+    else:
+        contamination = noise_mean / real_days
+        proporcion = contamination / CONTAMINACION_CERO
+        score = 10.0 * (1.0 - proporcion)
+        if score > 10.0:
+            score = 10.0
+        if score < 0.0:
+            score = 0.0
+
+    return {
+        "threshold": threshold,
+        "persist": persist,
+        "real_days": int(real_days),
+        "real_episodes": int(real_episodes),
+        "noise_mean": round(noise_mean, 3),
+        "noise_max": noise_max,
+        "contamination": round(contamination, 6),
+        "score": round(score, 1),
+    }
+
+
+def signal_noise_grid(df_rolling, thresholds=None, persists=None,
+                      n_reps=100, seed=0):
+    """
+    Calcula el indicador para todas las combinaciones de umbral x persistencia
+    que la app deja elegir. Es lo que run_pipeline.py vuelca a JSON para que
+    el frontend no tenga que calcular nada.
+
+    Devuelve un diccionario con la clave "umbral_persistencia" (por ejemplo
+    "2.0_5") apuntando al resultado de signal_noise_score.
+    """
+    if thresholds is None:
+        thresholds = [1.5, 2.0, 2.5]
+    if persists is None:
+        persists = [3, 5, 7]
+
+    grid = {}
+    for threshold in thresholds:
+        for persist in persists:
+            clave = str(threshold) + "_" + str(persist)
+            grid[clave] = signal_noise_score(
+                df_rolling, threshold, persist, n_reps, seed)
+
+    return grid
